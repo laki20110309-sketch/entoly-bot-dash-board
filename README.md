@@ -38,8 +38,10 @@ PORT=3000
 
 現在のサンプルコードは秘密鍵が未設定でもボット自体は起動しますが、管理APIへのアクセスは拒否します。
 
-`app.js` の末尾には、VPS API接続用の `window.EntryBotApi` クライアントを用意しています。次の段階で、ボット側に以下のAPIを追加して画面のモック値を実データへ置き換えます。
+`app.js` にはVPS API接続用の`window.EntryBotApi`クライアントを用意しています。Discordログインボタンを押すと、VPSのOAuth設定を自動取得してDiscordへ遷移します。次のAPIが利用されます。
 
+- `GET /api/auth/config`
+- `POST /api/auth/discord`
 - `GET /api/guilds`
 - `GET /api/guilds/:guildId/settings`
 - `PATCH /api/guilds/:guildId/settings`
@@ -50,3 +52,23 @@ PORT=3000
 ## 注意
 
 この試作版のボタンは、現時点では画面内の状態表示と通知までです。VPS APIを追加するまで、Discordサーバーの設定やチャンネルを実際に変更することはありません。実接続時は、リセットと一括削除に二重確認、管理者権限確認、操作ログを必ず実装します。
+
+
+## Discord OAuth2ログイン（VPS API連携）
+
+この管理画面は、Discord OAuth2でログインした運営メンバーについて、AdministratorまたはManage Server権限を持ち、かつEntry Botが参加しているサーバーだけを選択肢に表示します。DiscordのClient SecretはGitHub Pagesへ置かず、VPSの`.env`だけに保存してください。
+
+VPS側の`.env`には、既存の`DISCORD_TOKEN`に加えて次を設定します。
+
+```env
+DASHBOARD_SECRET=既存の管理API用秘密鍵
+DASHBOARD_ORIGIN=https://ユーザー名.github.io/管理画面リポジトリ名
+PORT=3000
+DISCORD_CLIENT_ID=Discord Developer PortalのApplication ID
+DISCORD_CLIENT_SECRET=Discord Developer Portalで発行したClient Secret
+DISCORD_REDIRECT_URI=https://ユーザー名.github.io/管理画面リポジトリ名/
+```
+
+Discord Developer PortalのOAuth2設定で、Redirectsに`DISCORD_REDIRECT_URI`と完全一致するURLを登録します。OAuth2のスコープは`identify`と`guilds`を使用します。新しい管理画面ではClient IDをブラウザで入力せず、VPSの`GET /api/auth/config`から公開可能なClient IDだけを取得します。Client Secret、Discord Token、`DASHBOARD_SECRET`はGitHubリポジトリへコミットしないでください。ログイン後は、Discordの表示名とアバターが管理画面右上に表示されます。
+
+GitHub PagesがHTTPSで公開されるため、VPS APIもHTTPSのURLで公開する必要があります。HTTPのIPアドレスをHTTPSページから直接呼び出すと、ブラウザのMixed Content制限で失敗することがあります。

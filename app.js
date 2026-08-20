@@ -70,13 +70,58 @@ renderActivities();
 // ---------------------------------------------------------------------------
 // Discord OAuth2 & VPS API Client
 // ---------------------------------------------------------------------------
+const OAUTH_STATE_KEY='entryBotOAuthState';
+
+function escapeHtml(value=''){
+    return String(value).replace(/[&<>'"]/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[char]));
+}
+
+function createOAuthState(){
+    const bytes=new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    return [...bytes].map(byte=>byte.toString(16).padStart(2,'0')).join('');
+}
+
+function getAvatarUrl(user){
+    if(user?.avatar&&user?.id){
+        return `https://cdn.discordapp.com/avatars/${encodeURIComponent(user.id)}/${encodeURIComponent(user.avatar)}.png?size=128`;
+    }
+    const index=user?.id?Number(BigInt(user.id)%5n):0;
+    return `https://cdn.discordapp.com/embed/avatars/${Number.isFinite(index)?index:0}.png`;
+}
+
+function renderLoggedOutUser(){
+    $('#userAvatar').textContent='D';
+    $('#userInfo').innerHTML='<strong>Discordでログイン</strong><small>管理画面へ接続</small>';
+    if($('#topUserAvatar')){$('#topUserAvatar').textContent='D';$('#topUserAvatar').classList.remove('has-image')}
+    if($('#topUserName'))$('#topUserName').textContent='Discordでログイン';
+    if($('#topUserTag'))$('#topUserTag').textContent='管理画面へ接続';
+}
+
+function renderAvatar(element, user){
+    if(!element)return;
+    const url=getAvatarUrl(user);
+    element.innerHTML=`<img src="${url}" alt="" style="width:100%;height:100%;border-radius:inherit;object-fit:cover;">`;
+    element.classList.add('has-image');
+}
+
+function renderAuthenticatedUser(user){
+    const displayName=user?.globalName||user?.username||'Discordユーザー';
+    const tag=user?.username?`@${user.username}`:'Discordログイン中';
+    $('#userInfo').innerHTML=`<strong>${escapeHtml(displayName)}</strong><small>${escapeHtml(tag)}</small>`;
+    renderAvatar($('#userAvatar'),user);
+    if($('#topUserName'))$('#topUserName').textContent=displayName;
+    if($('#topUserTag'))$('#topUserTag').textContent=tag;
+    renderAvatar($('#topUserAvatar'),user);
+}
+
 window.EntryBotApi={
     baseUrl:localStorage.getItem('entryBotApiUrl')||'',
     token:'',
     user:null,
     guilds:[],
     configure({baseUrl,token}={}){
-        this.baseUrl=(baseUrl||'').replace(/\/$/,'');
+        this.baseUrl=(baseUrl||'').trim().replace(/\/$/,'');
         this.token=token||'';
         if(baseUrl)localStorage.setItem('entryBotApiUrl',this.baseUrl);
     },
@@ -93,6 +138,11 @@ window.EntryBotApi={
         if(!res.ok)throw new Error(`API ${res.status}`);
         return res.json();
     },
+    async getOAuthConfig(){
+        const data=await this.request('/api/auth/config');
+        if(!data.clientId)throw new Error('VPS側にDiscord Client IDが設定されていません');
+        return data;
+    },
     async loginWithDiscord(code){
         const res=await fetch(`${this.baseUrl}/api/auth/discord`,{
             method:'POST',
@@ -103,56 +153,87 @@ window.EntryBotApi={
             body:JSON.stringify({code})
         });
         const data=await res.json();
-        if(!data.success)throw new Error(data.error||'Login failed');
+        if(!res.ok||!data.success)throw new Error(data.error||`API ${res.status}`);
         this.token=data.sessionToken;
         this.user=data.user;
-        this.guilds=data.guilds;
+        this.guilds=data.guilds||[];
         return data;
     }
 };
 
+async function getApiBaseUrl(){
+    let baseUrl=EntryBotApi.baseUrl||localStorage.getItem('entryBotApiUrl')||'';
+    if(!baseUrl){
+        baseUrl=prompt('最初の1回だけ、VPS APIのURLを入力してください（例: https://xxxx.loca.lt）');
+    }
+    if(!baseUrl)return '';
+    EntryBotApi.configure({baseUrl});
+    return EntryBotApi.baseUrl;
+}
+
+async function startDiscordLogin(){
+    try{
+        if(!await getApiBaseUrl())return;
+        showToast('Discordログインを準備中...');
+        const config=await EntryBotApi.getOAuthConfig();
+        const redirectUri=config.redirectUri||`${window.location.origin}${window.location.pathname}`;
+        const state=createOAuthState();
+        sessionStorage.setItem(OAUTH_STATE_KEY,state);
+        const authUrl=new URL('https://discord.com/oauth2/authorize');
+        authUrl.searchParams.set('client_id',config.clientId);
+        authUrl.searchParams.set('redirect_uri',redirectUri);
+        authUrl.searchParams.set('response_type','code');
+        authUrl.searchParams.set('scope','identify guilds');
+        authUrl.searchParams.set('state',state);
+        window.location.assign(authUrl.toString());
+    }catch(error){
+        console.error(error);
+        showToast(`ログイン準備に失敗しました: ${error.message}`);
+    }
+}
+
 async function initOAuth2(){
+    renderLoggedOutUser();
     const urlParams=new URLSearchParams(window.location.search);
     const code=urlParams.get('code');
-    let baseUrl=localStorage.getItem('entryBotApiUrl');
-    if(!baseUrl){
-        baseUrl=prompt('VPS APIのURLを入力してください（例: http://161.34.33.221:3000）');
-        if(baseUrl) localStorage.setItem('entryBotApiUrl',baseUrl.replace(/\/$/,''));
-    }
-    if(baseUrl) EntryBotApi.configure({baseUrl});
+    const returnedState=urlParams.get('state');
+    const savedAuth=sessionStorage.getItem('entryBotAuth');
+    const baseUrl=await getApiBaseUrlForCallback(code);
 
-    if(code && baseUrl){
+    if(code&&baseUrl){
         try{
+            const expectedState=sessionStorage.getItem(OAUTH_STATE_KEY);
+            if(expectedState&&returnedState!==expectedState)throw new Error('OAuth stateが一致しません');
+            sessionStorage.removeItem(OAUTH_STATE_KEY);
             showToast('Discord認証中...');
             const data=await EntryBotApi.loginWithDiscord(code);
             sessionStorage.setItem('entryBotAuth',JSON.stringify(data));
             window.history.replaceState({},document.title,window.location.pathname);
             setupUserSession(data);
             showToast('Discordログイン成功！');
-        }catch(e){
-            showToast('ログインに失敗しました: '+e.message);
+        }catch(error){
+            console.error(error);
+            showToast(`ログインに失敗しました: ${error.message}`);
         }
-    }else{
-        const saved=sessionStorage.getItem('entryBotAuth');
-        if(saved){
-            try{setupUserSession(JSON.parse(saved))}catch(e){}
-        }
+    }else if(savedAuth){
+        try{setupUserSession(JSON.parse(savedAuth))}catch(error){sessionStorage.removeItem('entryBotAuth')}
     }
 }
 
+async function getApiBaseUrlForCallback(code){
+    if(EntryBotApi.baseUrl)return EntryBotApi.baseUrl;
+    if(!code)return '';
+    return getApiBaseUrl();
+}
+
 function setupUserSession(data){
-    EntryBotApi.user=data.user;
-    EntryBotApi.guilds=data.guilds;
-    EntryBotApi.token=data.sessionToken;
-    if(data.user){
-        $('#userInfo').innerHTML=`<strong>${data.user.username}</strong><small>Discordログイン中</small>`;
-        if(data.user.avatar){
-            $('#userAvatar').innerHTML=`<img src="https://cdn.discordapp.com/avatars/${data.user.id}/${data.user.avatar}.png" style="width:100%;height:100%;border-radius:9px;object-fit:cover;">`;
-        }
-    }
-    if(data.guilds&&data.guilds.length>0){
+    EntryBotApi.user=data.user||null;
+    EntryBotApi.guilds=data.guilds||[];
+    EntryBotApi.token=data.sessionToken||'';
+    if(data.user)renderAuthenticatedUser(data.user);
+    if(EntryBotApi.guilds.length>0){
         const savedGid=sessionStorage.getItem('entryBotGuildId');
-        const target=data.guilds.find(g=>g.id===savedGid)||data.guilds[0];
+        const target=EntryBotApi.guilds.find(g=>g.id===savedGid)||EntryBotApi.guilds[0];
         activeGuildId=target.id;
         sessionStorage.setItem('entryBotGuildId',target.id);
         $('#serverName').textContent=target.name;
@@ -161,20 +242,26 @@ function setupUserSession(data){
     }
 }
 
-$('#userButton').addEventListener('click',()=>{
-    const baseUrl=EntryBotApi.baseUrl||prompt('VPS APIのURLを入力してください（例: http://161.34.33.221:3000）');
-    if(!baseUrl) return;
-    EntryBotApi.configure({baseUrl});
-    const clientId=prompt('Discord Developer Portalの「Client ID」を入力してください');
-    if(!clientId) return;
-    const redirectUri=window.location.origin+window.location.pathname;
-    const authUrl=`https://discord.com/api/oauth2/authorize?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=identify%20guilds`;
-    window.location.href=authUrl;
-});
+async function handleUserButtonClick(){
+    if(EntryBotApi.token){
+        if(confirm('Discordからログアウトしますか？')){
+            EntryBotApi.token='';EntryBotApi.user=null;EntryBotApi.guilds=[];activeGuildId='';
+            sessionStorage.removeItem('entryBotAuth');sessionStorage.removeItem('entryBotGuildId');
+            $('#serverName').textContent='サーバーを選択';
+            renderLoggedOutUser();
+            showToast('ログアウトしました');
+        }
+        return;
+    }
+    await startDiscordLogin();
+}
+
+$('#userButton').addEventListener('click',handleUserButtonClick);
+$('#topUser')?.addEventListener('click',handleUserButtonClick);
 
 $('#serverButton').addEventListener('click',()=>{
     if(!EntryBotApi.guilds||EntryBotApi.guilds.length===0){
-        showToast('先に左下のユーザーボタンからDiscordログインしてください');
+        showToast('先にDiscordでログインしてください');
         return;
     }
     const names=EntryBotApi.guilds.map((g,i)=>`${i+1}: ${g.name}`).join('\n');
@@ -191,8 +278,8 @@ $('#serverButton').addEventListener('click',()=>{
 });
 
 async function ensureConnection(){
-    if(EntryBotApi.baseUrl&&activeGuildId&&EntryBotApi.token) return true;
-    showToast('Discordログインとサーバー選択を行ってください');
+    if(EntryBotApi.baseUrl&&activeGuildId&&EntryBotApi.token)return true;
+    showToast('Discordでログインして、管理するサーバーを選択してください');
     return false;
 }
 
