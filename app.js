@@ -161,10 +161,13 @@ window.EntryBotApi={
     }
 };
 
-async function getApiBaseUrl(){
+async function getApiBaseUrl(forcePrompt=false){
     let baseUrl=EntryBotApi.baseUrl||localStorage.getItem('entryBotApiUrl')||'';
-    if(!baseUrl){
-        baseUrl=prompt('最初の1回だけ、VPS APIのURLを入力してください（例: https://xxxx.loca.lt）');
+    if(forcePrompt || !baseUrl){
+        const current=baseUrl||'https://xxxx.loca.lt';
+        const input=prompt('VPS APIのURL（LocalTunnelなどのHTTPS URL）を入力してください:', current);
+        if(!input)return '';
+        baseUrl=input.trim();
     }
     if(!baseUrl)return '';
     EntryBotApi.configure({baseUrl});
@@ -253,6 +256,43 @@ async function handleUserButtonClick(){
         }
         return;
     }
+    await startDiscordLogin();
+}
+
+async function handleUserButtonClick(){
+    if(EntryBotApi.token){
+        if(confirm('Discordからログアウトしますか？')){
+            EntryBotApi.token='';EntryBotApi.user=null;EntryBotApi.guilds=[];activeGuildId='';
+            sessionStorage.removeItem('entryBotAuth');sessionStorage.removeItem('entryBotGuildId');
+            $('#serverName').textContent='サーバーを選択';
+            renderLoggedOutUser();
+            showToast('ログアウトしました');
+        }
+        return;
+    }
+    // Shiftキーを押しながらクリック、または保存済みURLが無い場合はURL入力を強制する
+    const forcePrompt = !localStorage.getItem('entryBotApiUrl');
+    const baseUrl = await getApiBaseUrl(forcePrompt);
+    if(!baseUrl)return;
+    
+    // 事前に接続テストを行い、Failed to fetchならURL再入力を促す
+    try{
+        showToast('VPSへ接続を確認中...');
+        const res=await fetch(`${baseUrl}/api/auth/config`,{
+            headers:{'bypass-tunnel-reminder':'true'}
+        });
+        if(!res.ok) throw new Error(`API ${res.status}`);
+    }catch(e){
+        if(confirm(`VPS APIへの接続に失敗しました (${e.message})。\n新しいLocalTunnelのURLを入力し直しますか？`)){
+            localStorage.removeItem('entryBotApiUrl');
+            EntryBotApi.baseUrl='';
+            const newBaseUrl=await getApiBaseUrl(true);
+            if(!newBaseUrl)return;
+        }else{
+            return;
+        }
+    }
+    
     await startDiscordLogin();
 }
 
