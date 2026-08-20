@@ -15,7 +15,7 @@ Discord大会エントリーボットをブラウザから管理するための�
 
 ## GitHub Pagesで公開する方法
 
-このフォルダの `index.html`、`styles.css`、`app.js`、`README.md` をGitHubリポジトリのルートへアップロードします。GitHubの **Settings → Pages** で、公開元に対象ブランチのルートを選択すると静的サイトとして公開できます。
+このフォルダをGitHubリポジトリへアップロードしてください。`.github/workflows/pages.yml` が含まれているため、リポジトリの **Settings → Pages → Source** で **GitHub Actions** を選択すると、`main` または `master` へのpush時に自動公開されます。Actionsが完了すると、`https://ユーザー名.github.io/リポジトリ名/` でアクセスできます。
 
 ## VPSのボットとの接続について
 
